@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hifz Tester</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><h1>Hifz Tester</h1><p>Recall the ayah, carry on reciting, and see exactly what you missed.</p></header>
+
+<main>
+  <section id="setup" class="card">
+    <h2>1. Choose your range</h2>
+    <div class="grid">
+      <fieldset><legend>From</legend>
+        <label>Surah <select id="fromSurah"></select></label>
+        <label>Ayah <input id="fromAyah" type="number" min="1" value="1"></label>
+      </fieldset>
+      <fieldset><legend>To</legend>
+        <label>Surah <select id="toSurah"></select></label>
+        <label>Ayah <input id="toAyah" type="number" min="1" value="1"></label>
+      </fieldset>
+    </div>
+    <div class="grid">
+      <label>Prompt length
+        <select id="promptLen">
+          <option value="2">First 2 words</option>
+          <option value="3" selected>First 3 words</option>
+          <option value="4">First 4 words</option>
+          <option value="half">Half the ayah</option>
+        </select>
+      </label>
+      <label>Recite on for
+        <select id="moreAyat">
+          <option value="0">Rest of the ayah</option>
+          <option value="1">Rest + 1 more ayah</option>
+          <option value="2">Rest + 2 more ayat</option>
+          <option value="3">Rest + 3 more ayat</option>
+        </select>
+      </label>
+      <label>Reciter <select id="reciter"></select></label>
+    </div>
+    <button id="start" class="primary">Start test</button>
+    <p id="setupMsg" class="msg"></p>
+  </section>
+
+  <section id="quiz" class="card" hidden>
+    <div class="row"><h2 id="qTitle">Question</h2><span id="score" class="pill"></span></div>
+    <div class="row">
+      <button id="play">▶ Play prompt</button>
+      <button id="replay" class="ghost">Hear again</button>
+    </div>
+    <label class="guess">Which ayah is it? (optional)
+      <input id="guessSurah" type="number" min="1" max="114" placeholder="Surah #">
+      <input id="guessAyah" type="number" min="1" placeholder="Ayah #">
+    </label>
+    <div class="row">
+      <button id="rec" class="rec">● Record my recitation</button>
+      <span id="recState" class="muted"></span>
+    </div>
+    <label>What was heard (edit if the recogniser got it wrong)
+      <textarea id="transcript" dir="rtl" lang="ar" rows="3" placeholder="Your recitation will appear here…"></textarea>
+    </label>
+    <div class="row">
+      <button id="check" class="primary">Check</button>
+      <button id="reveal" class="ghost">Just show me</button>
+      <button id="next" class="ghost">Next question →</button>
+    </div>
+    <audio id="playback" controls hidden></audio>
+
+    <div id="result" hidden>
+      <h3 id="answerRef"></h3>
+      <p id="guessResult" class="msg"></p>
+      <div id="summary" class="summary"></div>
+      <p class="legend">
+        <span class="w correct">correct</span><span class="w close">close</span>
+        <span class="w wrong">wrong</span><span class="w missed">missed</span>
+        <span class="w notreached">not reached</span><span class="w extra">extra</span>
+      </p>
+      <div id="diff" class="diff" dir="rtl" lang="ar"></div>
+    </div>
+  </section>
+</main>
+
+<footer>Text &amp; metadata: Quran.com API · Audio: EveryAyah · Speech recognition is a browser feature and can make mistakes — use the editable box to correct it. This tool checks words, not tajweed; keep a teacher for that.</footer>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
