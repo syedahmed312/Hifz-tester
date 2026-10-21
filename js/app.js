@@ -1,6 +1,6 @@
 import { loadChapters, loadVerses, RECITERS } from './api.js';
 import { normalize, align, summarize, stripPrompt } from './arabic.js';
-import { transcribe, loadModel } from './asr.js';
+import { transcribe, loadModel, startCapture } from './asr.js';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -169,6 +169,9 @@ function warmUpModel() {
   loadModel((p) => setModelStatus(p)).catch(() => setModelStatus('Speech model failed to load — you can still type your recitation below.'));
 }
 
+const LIVE_EVERY_MS = 3000;
+let liveTimer = null, tickTimer = null, liveBusy = false;
+
 $('rec').addEventListener('click', () => (state.listening ? stopRecording() : startRecording()));
 
 async function startRecording() {
@@ -181,9 +184,13 @@ async function startRecording() {
     state.stream = stream;
     const chunks = [];
     const token = state.token = (state.token || 0) + 1;
+    const capture = startCapture(stream);
+    state.capture = capture;
     const rec = new MediaRecorder(stream);
     rec.ondataavailable = (e) => chunks.push(e.data);
-    rec.onstop = () => { if (token === state.token) onRecorded(new Blob(chunks, { type: rec.mimeType })); };
+    rec.onstop = () => {
+      if (token === state.token) onRecorded(new Blob(chunks, { type: rec.mimeType }), state.finalSamples);
+    };
     state.recorder = rec;
     rec.start();
   } catch {
@@ -194,7 +201,29 @@ async function startRecording() {
   state.listening = true;
   $('rec').classList.add('live');
   $('rec').textContent = '■ Stop';
-  $('recState').textContent = 'Recording… recite from where the prompt stopped, then press Stop.';
+  tickTimer = setInterval(() => {
+    const secs = Math.floor(state.capture.seconds());
+    const bars = '▁▂▃▄▅▆▇█'[Math.min(7, Math.floor(state.capture.level() * 12))];
+    $('recState').textContent = `Recording ${secs}s ${bars} — recite from where the prompt stopped, then press Stop. Text appears below after a few seconds.`;
+  }, 200);
+  liveTimer = setInterval(liveUpdate, LIVE_EVERY_MS);
+}
+
+// Rough preview while the user is still reciting; the final pass on Stop replaces it.
+async function liveUpdate() {
+  if (!state.listening || liveBusy || state.capture.seconds() < 1.5) return;
+  const token = state.token;
+  liveBusy = true;
+  try {
+    const text = await transcribe(state.capture.samples());
+    if (state.listening && token === state.token && text) $('transcript').value = text;
+  } catch { /* the final pass reports errors */ }
+  liveBusy = false;
+}
+
+function clearTimers() {
+  clearInterval(tickTimer); clearInterval(liveTimer);
+  tickTimer = liveTimer = null;
 }
 
 function releaseMic() {
@@ -206,8 +235,10 @@ function releaseMic() {
 function discardRecording() {
   state.token = (state.token || 0) + 1;
   state.listening = false;
+  clearTimers();
   $('rec').classList.remove('live');
   $('rec').textContent = '● Record my recitation';
+  if (state.capture) { state.capture.stop(); state.capture = null; }
   if (state.recorder && state.recorder.state !== 'inactive') { state.recorder.onstop = null; state.recorder.stop(); }
   state.recorder = null;
   releaseMic();
@@ -216,22 +247,26 @@ function discardRecording() {
 function stopRecording() {
   if (!state.listening) return;
   state.listening = false;
+  clearTimers();
   $('rec').classList.remove('live');
   $('rec').textContent = '● Record my recitation';
+  state.finalSamples = state.capture.stop();
+  state.capture = null;
   if (state.recorder && state.recorder.state !== 'inactive') state.recorder.stop();
 }
 
-async function onRecorded(blob) {
+async function onRecorded(blob, samples) {
   releaseMic();
   const el = $('playback');
   el.src = URL.createObjectURL(blob);
   el.hidden = false;
   state.busy = true;
   $('check').disabled = true;
-  $('recState').textContent = 'Transcribing… (the first time this downloads the speech model)';
+  $('recState').textContent = 'Transcribing…';
   const token = state.token;
   try {
-    const text = await transcribe(blob, (p) => { if (token === state.token) $('recState').textContent = p; });
+    if (samples.length < 16000 * 0.5) throw new Error('the recording was too short');
+    const text = await transcribe(samples);
     if (token !== state.token) { state.busy = false; $('check').disabled = false; return; }
     $('transcript').value = text;
     $('recState').textContent = 'Done. Fix any word the recogniser got wrong, then press Check.';
