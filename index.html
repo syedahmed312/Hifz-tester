@@ -59,7 +59,8 @@
       <button id="rec" class="rec">● Record my recitation</button>
       <span id="recState" class="muted"></span>
     </div>
-    <label>What was heard (edit if the recogniser got it wrong)
+    <p id="modelState" class="muted small"></p>
+    <label>What was heard (edit if the recogniser got it wrong, then press Check)
       <textarea id="transcript" dir="rtl" lang="ar" rows="3" placeholder="Your recitation will appear here…"></textarea>
     </label>
     <div class="row">
@@ -83,7 +84,7 @@
   </section>
 </main>
 
-<footer>Text &amp; metadata: Quran.com API · Audio: EveryAyah · Speech recognition is a browser feature and can make mistakes — use the editable box to correct it. This tool checks words, not tajweed; keep a teacher for that.</footer>
+<footer>Text &amp; metadata: Quran.com API · Audio: Quran.com / Quranic Audio · Speech recognition: Quran-tuned Whisper (tarteel-ai) running in your browser; it can still make mistakes — use the editable box to correct it. This tool checks words, not tajweed; keep a teacher for that.</footer>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

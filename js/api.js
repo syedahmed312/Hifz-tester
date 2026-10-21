@@ -1,15 +1,16 @@
-// Data + audio sources. Text/metadata: Quran.com API v4. Audio: EveryAyah.
+// Data + audio sources. Text, word list and per-word audio timings: Quran.com API v4.
+// Audio files: verses.quran.com / quranicaudio mirrors (as returned by the API).
 const API = 'https://api.quran.com/api/v4';
 
+// ids are Quran.com recitation ids
 export const RECITERS = [
-  { id: 'Alafasy_128kbps', name: 'Mishary Alafasy' },
-  { id: 'Husary_128kbps', name: 'Mahmoud Khalil Al-Husary' },
-  { id: 'Abdul_Basit_Murattal_192kbps', name: 'Abdul Basit (Murattal)' },
-  { id: 'Minshawy_Murattal_128kbps', name: 'Al-Minshawi (Murattal)' },
-  { id: 'Abdurrahmaan_As-Sudais_192kbps', name: 'Abdur-Rahman As-Sudais' },
-  { id: 'MaherAlMuaiqly128kbps', name: 'Maher Al-Muaiqly' },
-  { id: 'Ghamadi_40kbps', name: 'Saad Al-Ghamdi' },
-  { id: 'Hudhaify_128kbps', name: 'Ali Al-Hudhaify' },
+  { id: 7, name: 'Mishary Alafasy' },
+  { id: 2, name: 'Abdul Basit (Murattal)' },
+  { id: 3, name: 'Abdur-Rahman As-Sudais' },
+  { id: 5, name: 'Hani Ar-Rifai' },
+  { id: 9, name: 'Al-Minshawi (Murattal)' },
+  { id: 10, name: "Sa'ud Ash-Shuraym" },
+  { id: 4, name: 'Abu Bakr Al-Shatri' },
 ];
 
 const cache = (key) => {
@@ -36,18 +37,37 @@ export async function loadChapters() {
   return chapters;
 }
 
-export async function loadVerses(chapter) {
-  const key = `qt:verses:v1:${chapter}`;
+const absolute = (u) => (u.startsWith('//') ? `https:${u}` : u.startsWith('http') ? u : `https://verses.quran.com/${u}`);
+
+/**
+ * Verses of one surah for one reciter:
+ *   { chapter, ayah, words: [raw...], seg: { [wordPosition]: [startMs, endMs] }, url }
+ * `words` are Quran.com's own word units, so word positions line up with `seg`.
+ */
+export async function loadVerses(chapter, reciter) {
+  const key = `qt:verses:v3:${reciter}:${chapter}`;
   const hit = cache(key);
   if (hit) return hit;
-  const data = await getJSON(`${API}/verses/by_chapter/${chapter}?fields=text_imlaei&per_page=300`);
-  const verses = data.verses.map((v) => ({
-    chapter, ayah: v.verse_number, text: v.text_imlaei,
-  }));
+  const data = await getJSON(
+    `${API}/verses/by_chapter/${chapter}?audio=${reciter}&words=true&word_fields=text_imlaei&per_page=300`
+  );
+  const verses = data.verses.map((v) => {
+    const words = [];
+    const pos = [];
+    for (const w of v.words) {
+      if (w.char_type_name !== 'word') continue;
+      words.push(w.text_imlaei || w.text);
+      pos.push(w.position);
+    }
+    const seg = {};
+    for (const s of (v.audio && v.audio.segments) || []) {
+      if (s.length === 4) seg[s[1]] = [s[2], s[3]];
+    }
+    return {
+      chapter, ayah: v.verse_number, words, pos, seg,
+      url: v.audio ? absolute(v.audio.url) : null,
+    };
+  });
   store(key, verses);
   return verses;
 }
-
-const pad3 = (n) => String(n).padStart(3, '0');
-export const audioUrl = (reciter, chapter, ayah) =>
-  `https://everyayah.com/data/${reciter}/${pad3(chapter)}${pad3(ayah)}.mp3`;

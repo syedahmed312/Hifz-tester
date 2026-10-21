@@ -12,8 +12,8 @@ reciting, and get a word-by-word diff of what you said vs. the actual text.
     node tests/align.test.mjs
 
 ## Notes
-- Text/metadata: Quran.com API; audio: EveryAyah (internet needed).
-- Speech recognition uses the browser's Web Speech API (`ar-SA`). Chrome/Edge/Safari only;
-  accuracy on Quranic recitation is limited, so the transcript box is editable.
-- Prompt length is estimated from letter share of the ayah audio, so it can be off by a syllable.
-- Checks words only, not tajweed. Planned upgrade: a Quran-tuned Whisper model for recognition.
+- Text, word list and per-word audio timings: Quran.com API v4; audio files from Quran.com / Quranic Audio (internet needed).
+- The prompt is cut at the real end time of the chosen word (falls back to an estimate for the few ayat whose timings are incomplete).
+- Recognition runs in the browser with a Quran-tuned Whisper model (`eventhorizon0/tarteel-ai-onnx-whisper-base-ar-quran`, via transformers.js, WASM, q4). About 140 MB, downloaded once on first use and then cached. Transcription takes a few seconds per 10 s of recitation on CPU.
+- The transcript box stays editable so a misheard word can be fixed before pressing Check.
+- Checks words only, not tajweed.

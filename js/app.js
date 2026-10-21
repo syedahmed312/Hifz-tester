@@ -1,10 +1,11 @@
-import { loadChapters, loadVerses, audioUrl, RECITERS } from './api.js';
-import { tokenize, normalize, align, summarize, stripPrompt } from './arabic.js';
+import { loadChapters, loadVerses, RECITERS } from './api.js';
+import { normalize, align, summarize, stripPrompt } from './arabic.js';
+import { transcribe, loadModel } from './asr.js';
 
 const $ = (id) => document.getElementById(id);
 const state = {
   chapters: [], pool: [], queue: [], q: null, asked: 0, correctGuesses: 0, guessed: 0,
-  recognizer: null, recorder: null, chunks: [], listening: false, finalText: '',
+  recorder: null, chunks: [], listening: false, busy: false,
 };
 
 // ---------- setup ----------
@@ -45,7 +46,7 @@ async function start() {
   $('setupMsg').textContent = 'Loading text…';
   try {
     const all = [];
-    for (let s = fs; s <= ts; s++) all.push(...await loadVerses(s));
+    for (let s = fs; s <= ts; s++) all.push(...await loadVerses(s, +$('reciter').value));
     state.all = all;
     state.pool = all.filter((v) => !(v.chapter === fs && v.ayah < fa) && !(v.chapter === ts && v.ayah > ta));
   } catch (e) {
@@ -57,6 +58,7 @@ async function start() {
   $('setupMsg').textContent = '';
   state.asked = 0; state.guessed = 0; state.correctGuesses = 0; state.queue = [];
   $('quiz').hidden = false;
+  warmUpModel();
   nextQuestion();
   $('quiz').scrollIntoView({ behavior: 'smooth' });
 }
@@ -83,7 +85,6 @@ function nextQuestion() {
   $('qTitle').textContent = `Question ${state.asked}`;
   updateScore();
   $('transcript').value = '';
-  state.finalText = '';
   $('guessSurah').value = ''; $('guessAyah').value = '';
   $('result').hidden = true;
   $('playback').hidden = true;
@@ -91,39 +92,39 @@ function nextQuestion() {
   playPrompt();
 }
 
-function buildQuestion(verse) {
-  const words = tokenize(verse.text);
-  if (!words.length) return null;
-  const mode = $('promptLen').value;
-  let n = mode === 'half' ? Math.ceil(words.length / 2) : +mode;
-  if (n >= words.length) n = Math.max(1, Math.floor(words.length / 2));
-  const extra = +$('moreAyat').value;
+const toTokens = (verse) =>
+  verse.words
+    .map((raw) => ({ raw, norm: normalize(raw), ref: `${verse.chapter}:${verse.ayah}` }))
+    .filter((w) => w.norm.length);
 
-  const expected = words.slice(n).map((w) => ({ ...w, ref: `${verse.chapter}:${verse.ayah}` }));
+function buildQuestion(verse) {
+  if (!verse.url) return null;
+  // Keep Quran.com word positions so the audio timings line up with each word.
+  const units = verse.words.map((raw, i) => ({ raw, norm: normalize(raw), pos: verse.pos[i] }))
+    .filter((w) => w.norm.length);
+  if (!units.length) return null;
+  const mode = $('promptLen').value;
+  let n = mode === 'half' ? Math.ceil(units.length / 2) : +mode;
+  if (n >= units.length) n = Math.max(1, Math.floor(units.length / 2));
+  const extra = +$('moreAyat').value;
+  const ref = `${verse.chapter}:${verse.ayah}`;
+
+  const expected = units.slice(n).map((w) => ({ ...w, ref }));
   // Continue into following ayat (across surah boundaries) if requested,
   // but never past the end of the chosen range.
   let idx = state.all.indexOf(verse);
   const poolEnd = state.pool[state.pool.length - 1];
   let remaining = extra || (expected.length ? 0 : 1);
   while (remaining > 0) {
-    const cur = state.all[idx];
-    if (cur === poolEnd) break;
+    if (state.all[idx] === poolEnd) break;
     idx++;
     const nv = state.all[idx];
     if (!nv) break;
-    expected.push(...tokenize(nv.text).map((w) => ({ ...w, ref: `${nv.chapter}:${nv.ayah}` })));
+    expected.push(...toTokens(nv));
     remaining--;
   }
   if (!expected.length) return null;
-  return {
-    verse, prompt: words.slice(0, n), expected, fraction: promptFraction(words, n),
-    url: audioUrl($('reciter').value, verse.chapter, verse.ayah),
-  };
-}
-
-function promptFraction(words, n) {
-  const len = (arr) => arr.reduce((s, w) => s + w.norm.length, 0);
-  return len(words.slice(0, n)) / len(words);
+  return { verse, prompt: units.slice(0, n), expected, promptWords: n, totalWords: units.length, url: verse.url };
 }
 
 function updateScore() {
@@ -140,90 +141,93 @@ function stopAudio() {
 function playPrompt() {
   stopAudio();
   const q = state.q;
-  audio = new Audio(q.url);
-  const a = audio;
+  const seg = q.verse.seg;
+  const first = q.prompt[0], last = q.prompt[q.prompt.length - 1];
+  const a = (audio = new Audio(q.url));
   a.addEventListener('error', () => { $('recState').textContent = 'Could not load the audio for this ayah.'; });
   a.addEventListener('loadedmetadata', () => {
-    // Estimate where the prompt ends from the share of letters it covers.
-    const end = Math.min(a.duration, a.duration * q.fraction + 0.25);
+    // Real word timings from Quran.com; fall back to a letter-share estimate if a word has none.
+    let start = 0, end;
+    if (seg[first.pos]) start = Math.max(0, seg[first.pos][0] / 1000 - 0.1);
+    if (seg[last.pos]) end = seg[last.pos][1] / 1000 + 0.1;
+    else end = a.duration * (q.promptWords / q.totalWords) + 0.25;
+    end = Math.min(a.duration, end);
+    a.currentTime = start;
     a.play().catch(() => { $('recState').textContent = 'Tap "Play prompt" to start audio.'; });
     stopTimer = setInterval(() => {
       if (a.currentTime >= end) { a.pause(); clearInterval(stopTimer); }
-    }, 30);
+    }, 20);
   });
 }
 
 $('play').addEventListener('click', playPrompt);
 $('replay').addEventListener('click', playPrompt);
 
-// ---------- recording + recognition ----------
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// ---------- recording + recognition (Quran-tuned Whisper, in the browser) ----------
+function setModelStatus(text) { $('modelState').textContent = text; }
+function warmUpModel() {
+  loadModel((p) => setModelStatus(p)).catch(() => setModelStatus('Speech model failed to load — you can still type your recitation below.'));
+}
 
 $('rec').addEventListener('click', () => (state.listening ? stopRecording() : startRecording()));
 
 async function startRecording() {
+  if (state.busy) return;
   stopAudio();
-  state.finalText = '';
   $('transcript').value = '';
   $('playback').hidden = true;
-  state.listening = true;
-  $('rec').classList.add('live');
-  $('rec').textContent = '■ Stop';
-
-  try { // optional: keep the audio so the user can listen back
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
     state.stream = stream;
     state.chunks = [];
     state.recorder = new MediaRecorder(stream);
     state.recorder.ondataavailable = (e) => state.chunks.push(e.data);
-    state.recorder.onstop = () => {
-      const blob = new Blob(state.chunks, { type: state.recorder.mimeType });
-      const el = $('playback');
-      el.src = URL.createObjectURL(blob);
-      el.hidden = false;
-      state.stream.getTracks().forEach((t) => t.stop());
-    };
+    state.recorder.onstop = onRecorded;
     state.recorder.start();
   } catch {
     $('recState').textContent = 'Microphone unavailable — allow mic access, or type what you recited below.';
-    state.listening = false;
-    $('rec').classList.remove('live'); $('rec').textContent = '● Record my recitation';
     return;
   }
-
-  if (!SR) {
-    $('recState').textContent = 'Recording… (this browser has no speech recognition — type your recitation below after listening back)';
-    return;
-  }
-  const r = new SR();
-  r.lang = 'ar-SA'; r.continuous = true; r.interimResults = true;
-  r.onresult = (e) => {
-    let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) state.finalText += ' ' + t; else interim += ' ' + t;
-    }
-    $('transcript').value = (state.finalText + interim).trim();
-  };
-  r.onerror = (e) => { $('recState').textContent = 'Recognition error: ' + e.error; };
-  r.onend = () => { if (state.listening) { try { r.start(); } catch { /* already running */ } } };
-  state.recognizer = r;
-  $('recState').textContent = 'Listening… recite from where the prompt stopped.';
-  r.start();
+  state.listening = true;
+  $('rec').classList.add('live');
+  $('rec').textContent = '■ Stop';
+  $('recState').textContent = 'Recording… recite from where the prompt stopped, then press Stop.';
 }
 
 function stopRecording() {
+  if (!state.listening) return;
   state.listening = false;
-  if (state.recognizer) { state.recognizer.onend = null; try { state.recognizer.stop(); } catch { /* noop */ } state.recognizer = null; }
-  if (state.recorder && state.recorder.state !== 'inactive') state.recorder.stop();
   $('rec').classList.remove('live');
   $('rec').textContent = '● Record my recitation';
-  if ($('recState').textContent.startsWith('Listening')) $('recState').textContent = 'Stopped. Edit the text if needed, then press Check.';
+  if (state.recorder && state.recorder.state !== 'inactive') state.recorder.stop();
+}
+
+async function onRecorded() {
+  state.stream.getTracks().forEach((t) => t.stop());
+  const blob = new Blob(state.chunks, { type: state.recorder.mimeType });
+  const el = $('playback');
+  el.src = URL.createObjectURL(blob);
+  el.hidden = false;
+  state.busy = true;
+  $('check').disabled = true;
+  $('recState').textContent = 'Transcribing… (the first time this downloads the speech model)';
+  try {
+    const text = await transcribe(blob, (p) => $('recState').textContent = p);
+    $('transcript').value = text;
+    $('recState').textContent = 'Done. Fix any word the recogniser got wrong, then press Check.';
+    $('check').disabled = false;
+    state.busy = false;
+    check();
+  } catch (e) {
+    $('recState').textContent = 'Could not transcribe: ' + e.message + '. You can type your recitation below.';
+    $('check').disabled = false;
+    state.busy = false;
+  }
 }
 
 // ---------- checking ----------
-$('check').addEventListener('click', () => { stopRecording(); check(); });
-$('reveal').addEventListener('click', () => { stopRecording(); reveal(); });
+$('check').addEventListener('click', () => { if (!state.busy) check(); });
+$('reveal').addEventListener('click', () => { if (!state.listening) reveal(); });
 $('next').addEventListener('click', nextQuestion);
 
 function showAnswer() {
@@ -242,18 +246,19 @@ function showAnswer() {
 }
 
 function renderDiff(result) {
-  const html = [];
-  let lastRef = null;
+  const blocks = [];
+  let cur = null;
   for (const r of result) {
     const ref = r.expected && r.expected.ref;
-    if (ref && lastRef && ref !== lastRef) html.push(`<span class="ayah-end">﴿${lastRef.split(':')[1]}﴾</span>`);
-    if (ref) lastRef = ref;
+    if (ref && (!cur || cur.ref !== ref)) { cur = { ref, html: [] }; blocks.push(cur); }
+    if (!cur) { cur = { ref: null, html: [] }; blocks.push(cur); }
     const word = r.expected ? r.expected.raw : r.said;
     const note = r.status === 'wrong' || r.status === 'close' ? `<small>${r.said}</small>` : '';
-    html.push(`<span class="w ${r.status}">${word}${note}</span>`);
+    cur.html.push(`<span class="w ${r.status}">${word}${note}</span>`);
   }
-  if (lastRef) html.push(`<span class="ayah-end">﴿${lastRef.split(':')[1]}﴾</span>`);
-  $('diff').innerHTML = html.join(' ');
+  $('diff').innerHTML = blocks
+    .map((b) => `<div class="ayahrow"><span class="ref">${b.ref || ''}</span>${b.html.join(' ')}</div>`)
+    .join('');
 }
 
 function check() {
