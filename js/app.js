@@ -74,7 +74,7 @@ function shuffle(a) {
 
 function nextQuestion() {
   stopAudio();
-  stopRecording();
+  discardRecording();
   for (let tries = 0; tries < 20; tries++) {
     if (!state.queue.length) state.queue = shuffle(state.pool.map((_, i) => i));
     const verse = state.pool[state.queue.pop()];
@@ -179,12 +179,15 @@ async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
     state.stream = stream;
-    state.chunks = [];
-    state.recorder = new MediaRecorder(stream);
-    state.recorder.ondataavailable = (e) => state.chunks.push(e.data);
-    state.recorder.onstop = onRecorded;
-    state.recorder.start();
+    const chunks = [];
+    const token = state.token = (state.token || 0) + 1;
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    rec.onstop = () => { if (token === state.token) onRecorded(new Blob(chunks, { type: rec.mimeType })); };
+    state.recorder = rec;
+    rec.start();
   } catch {
+    releaseMic();
     $('recState').textContent = 'Microphone unavailable — allow mic access, or type what you recited below.';
     return;
   }
@@ -192,6 +195,22 @@ async function startRecording() {
   $('rec').classList.add('live');
   $('rec').textContent = '■ Stop';
   $('recState').textContent = 'Recording… recite from where the prompt stopped, then press Stop.';
+}
+
+function releaseMic() {
+  if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+  state.stream = null;
+}
+
+// Stop recording and ignore whatever it captured (used when skipping to the next question).
+function discardRecording() {
+  state.token = (state.token || 0) + 1;
+  state.listening = false;
+  $('rec').classList.remove('live');
+  $('rec').textContent = '● Record my recitation';
+  if (state.recorder && state.recorder.state !== 'inactive') { state.recorder.onstop = null; state.recorder.stop(); }
+  state.recorder = null;
+  releaseMic();
 }
 
 function stopRecording() {
@@ -202,17 +221,18 @@ function stopRecording() {
   if (state.recorder && state.recorder.state !== 'inactive') state.recorder.stop();
 }
 
-async function onRecorded() {
-  state.stream.getTracks().forEach((t) => t.stop());
-  const blob = new Blob(state.chunks, { type: state.recorder.mimeType });
+async function onRecorded(blob) {
+  releaseMic();
   const el = $('playback');
   el.src = URL.createObjectURL(blob);
   el.hidden = false;
   state.busy = true;
   $('check').disabled = true;
   $('recState').textContent = 'Transcribing… (the first time this downloads the speech model)';
+  const token = state.token;
   try {
-    const text = await transcribe(blob, (p) => $('recState').textContent = p);
+    const text = await transcribe(blob, (p) => { if (token === state.token) $('recState').textContent = p; });
+    if (token !== state.token) { state.busy = false; $('check').disabled = false; return; }
     $('transcript').value = text;
     $('recState').textContent = 'Done. Fix any word the recogniser got wrong, then press Check.';
     $('check').disabled = false;
